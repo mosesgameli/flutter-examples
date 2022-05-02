@@ -1,0 +1,87 @@
+name: Flutter GitHub Actions Build CI
+
+on:
+  push:
+    branches:
+    - main
+    
+jobs:
+  # run tests and linting checks
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v1
+    - uses: actions/setup-java@v1
+      with:
+        java-version: '12.x'
+    
+    - uses: subosito/flutter-action@v1
+      with:
+        channel: 'stable' 
+        flutter-version: '2.10.x'
+
+    - run: flutter pub get
+    - run: flutter format --set-exit-if-changed .
+    - run: flutter analyze .
+    - run: flutter test
+  
+  # update app version
+  bump:
+    needs: [test]
+    runs-on: ubuntu-latest
+    
+    outputs:
+      app_version: ${{steps.v.outputs.app_version}} # used to save output of step with id `v`
+
+    steps:
+    - uses: actions/checkout@v1
+    - uses: actions/setup-python@v2 
+      with: 
+       python-version: '3.10.x' 
+    
+    # see https://gist.github.com/moses-20/80106dd29c705ba88bc2b17c33f98fcb for contents of `flutterpy` folder
+    - run: |
+        cd flutterpy
+        python -m pip install --upgrade pip 
+        pip install -r requirements.txt
+        
+    - id: v # output of running this step is required in the next job
+      run: | 
+        version=$(python flutterpy/main.py) 
+        echo "::set-output name=app_version::$version"
+        git config --local user.email 'actions@github.com'
+        git config --local user.name 'GitHub Actions'
+        git commit -am "bump app version to $version"
+      
+    - uses: ad-m/github-push-action@master
+      with: 
+        github_token: ${{secrets.GITHUB_TOKEN}}
+        branch: ${{github.ref}}
+
+  # build android apk     
+  build_android:
+    needs: [test, bump]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v1
+      - uses: actions/setup-java@v1
+        with:
+          java-version: '12.x'
+    
+      - uses: subosito/flutter-action@v1
+        with:
+          channel: 'stable' 
+          flutter-version: '2.10.x'
+
+      - run: echo "${{secrets.KEY_PROPERTIES}}" | base64 --decode > android/key.properties
+      - run: echo "${{secrets.KEYSTORE_JKS}}" | base64 --decode > android/app/keystore.jks
+      
+      - run: flutter pub get
+      - run: flutter build apk
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: ${{needs.bump.outputs.app_version}}
+          path: build/app/outputs/apk/release/app-release.apk
